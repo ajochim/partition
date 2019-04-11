@@ -1,3 +1,6 @@
 dp_scripts*
+transport*
+tests*
 device_7.gen
 device_7.xyz
+partition.out
