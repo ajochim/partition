@@ -23,8 +23,9 @@ def read_input():
     lines = inputfile.readlines()
     filename = lines[0][:-1]
     n_contacts = int(lines[1])
-    i_contacts = [int(lines[3 + ii]) for ii in range(n_contacts)]
-    r_interactions = [float(lines[3 + n_contacts + ii])
+    i_contacts = [int(lines[2 + ii]) for ii in range(n_contacts)]
+    i_contacts = sorted(i_contacts)
+    r_interactions = [float(lines[2 + n_contacts + ii])
                       for ii in range(n_contacts)]
     inputfile.close()
     return (filename, i_contacts, r_interactions)
@@ -140,6 +141,69 @@ def _create_principle_layers(chains):
     return principle_layers
 
 
+def test_interaction(filename, i_contacts, r_interactions, principle_layers):
+    '''Tests if every principle layer only interacts with adjacent layers.
+    Also checks that contacts only interact with one layer. Does not check if
+    contacts are interacting.'''
+    geo = Gen.fromfile(filename).geometry
+    interaction_mtrx = _create_interaction_mtrx(r_interactions)
+    test_passed = True
+    # Check layers
+    for layer in range(1, len(principle_layers) - 1):
+        interacting_layers = set()
+        for currentlayeratom in principle_layers[layer]:
+            for otherlayer in enumerate(principle_layers):
+                for otheratom in principle_layers[otherlayer[0]]:
+                    distance = np.linalg.norm(geo.coords[otheratom - 1] -
+                                              geo.coords[currentlayeratom - 1])
+                    species1 = geo.indexes[currentlayeratom - 1]
+                    species2 = geo.indexes[otheratom - 1]
+                    if distance <= interaction_mtrx[species1][species2]:
+                        interacting_layers.add(otherlayer[0])
+            if len(interacting_layers) != 3:
+                print('Principle layers were not sorted right! Atom '
+                      + str(currentlayeratom) + ' in layer '
+                      + str(layer) + ' is interacting with more than two '
+                      + 'layers besides himself: ' + str(interacting_layers))
+                test_passed = False
+            if not (layer - 1 and layer + 1) in interacting_layers:
+                print('Principle layers were not sorted right! Atom '
+                      + str(currentlayeratom) + ' in layer '
+                      + str(layer) + ' is interacting with non adjacent '
+                      + 'layers besides himself ' + str(interacting_layers))
+                test_passed = False
+    # Checks if every contact only interacts with one layer
+    i_contacts = sorted(i_contacts)
+    i_contacts.append(geo.natom + 1)
+    for contact in range(len(i_contacts) - 1):
+        contactatoms = set(range(i_contacts[contact], i_contacts[contact + 1]))
+        interacting_layers = set()
+        for atom in contactatoms:
+            for layer in enumerate(principle_layers):
+                for layeratom in principle_layers[layer[0]]:
+                    distance = np.linalg.norm(geo.coords[atom - 1] -
+                                              geo.coords[layeratom - 1])
+                    species1 = geo.indexes[atom - 1]
+                    species2 = geo.indexes[layeratom - 1]
+                    if distance <= interaction_mtrx[species1][species2]:
+                        interacting_layers.add(layer[0])
+            if len(interacting_layers) > 1:
+                print('Principle layers were not sorted right! Atom '
+                      + str(atom) + ' in contact '
+                      + str(contact) + ' is interacting with more than one '
+                      + 'layers: ' + str(interacting_layers))
+                test_passed = False
+    if test_passed:
+        print('Test passed')
+    return test_passed
+
+
+def create_jmolscript(filename, principle_layers):
+    '''Creates jmol script for alternated coloring of created principle layers.
+    Also labels layers.'''
+    pass
+
+
 def save_partition(principle_layers):
     '''Saves created partition (principle layers). First two lines saves number
     of layers and atoms per layer. From line 3, every line contains the atom
@@ -170,6 +234,8 @@ def save_partition(principle_layers):
 
 
 if __name__ == '__main__':
-    INPUT = read_input()
-    PRINCIPLE_LAYERS = partition(INPUT[0], INPUT[1], INPUT[2])
-    save_partition(PRINCIPLE_LAYERS)
+    FILENAME, I_CONTACTS, R_INTERACTION = read_input()
+    PRINCIPLE_LAYERS = partition(FILENAME, I_CONTACTS, R_INTERACTION)
+    if test_interaction(FILENAME, I_CONTACTS, R_INTERACTION, PRINCIPLE_LAYERS):
+        save_partition(PRINCIPLE_LAYERS)
+    create_jmolscript(FILENAME, PRINCIPLE_LAYERS)
