@@ -200,8 +200,24 @@ def test_interaction(filename, i_contacts, r_interactions, principle_layers):
 
 def create_jmolscript(filename, principle_layers):
     '''Creates jmol script for alternated coloring of created principle layers.
-    Also labels layers.'''
-    pass
+    Also labels layers. Script can be opened in jmol. Jmol also needs and .xyz
+    format of the geometry (use gen2xyz fileame.gen).
+    Run with: jmol -s scriptname'''
+    scriptname = filename[:-4] + '.part.js'
+    jmolscript = open(scriptname, 'w')
+    jmolscript.write('load ' + filename[:-4] + '.xyz' + '\n')
+    for layer in enumerate(principle_layers):
+        for atom in layer[1]:
+            jmolscript.write('select atomno=' + str(atom) + '\n')
+            jmolscript.write('label ' + str(layer[0]) + '\n')
+            if layer[0]%2 == 0:
+                color = 'yellow'
+            else:
+                color = 'red'
+            jmolscript.write('color ' + color + '\n')    
+    jmolscript.close()
+    print('Jmol script for graphical view created: ' + scriptname)
+    return None
 
 
 def save_partition(principle_layers):
@@ -231,6 +247,7 @@ def save_partition(principle_layers):
         outputfile.write(' '.join(layer[1]) + '\n')
     print('Principle Layers saved to partition.out')
     outputfile.close()
+    return None
 
 
 if __name__ == '__main__':
