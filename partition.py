@@ -12,6 +12,7 @@ rSpecies2
 ...
 '''
 
+import sys
 import numpy as np
 from dptools.gen import Gen
 
@@ -26,28 +27,28 @@ def read_input():
     i_contacts = [int(lines[2 + ii]) for ii in range(n_contacts)]
     i_contacts = sorted(i_contacts)
     r_interactions = [float(lines[2 + n_contacts + ii])
-                      for ii in range(n_contacts)]
+                      for ii in range(len(lines) - n_contacts - 2)]
     inputfile.close()
     return (filename, i_contacts, r_interactions)
 
 
-def partition(filename, i_contacts, r_interactions):
+def partition(filename, i_contacts, r_interactions, maxiterations):
     '''Creates principle layers'''
     geo = Gen.fromfile(filename).geometry
     interaction_mtrx = _create_interaction_mtrx(r_interactions)
     # Creating chains. Zeroth elements are contact bins. Next are device bins.
     # Atom indexes starting with 1. Careful with getting coordinates and inds!
     nchains = len(i_contacts)
-    chains = []
+    allchains = []
     # Adding contacts (bin_index 0)
     for contact in range(nchains):
-        chains.append([])
+        allchains.append([])
         if i_contacts[contact] is not max(i_contacts):
-            chains[contact].append(set(range(i_contacts[contact],
-                                             i_contacts[contact + 1])))
+            allchains[contact].append(set(range(i_contacts[contact],
+                                                i_contacts[contact + 1])))
         else:
-            chains[contact].append(set(range(i_contacts[contact],
-                                             geo.natom + 1)))
+            allchains[contact].append(set(range(i_contacts[contact],
+                                                geo.natom + 1)))
     # Each iteration creates one more bin in every chain.
     # Unsorted atoms start with device atoms.
     bin_index = 0
@@ -56,22 +57,34 @@ def partition(filename, i_contacts, r_interactions):
     while not all_sorted:
         bin_index += 1
         print('Starting to create bins with index: ', bin_index)
+        collision = False
         for chain in range(nchains):
-            new_bin = _create_bin(chains[chain][bin_index - 1],
+            new_bin = _create_bin(allchains[chain][bin_index - 1],
                                   unsorted, geo.coords, geo.indexes,
                                   interaction_mtrx)
-            chains[chain].append(new_bin)
-            unsorted = unsorted - new_bin
-        if _check_collision(chains[0], chains[1]):
-            print('Chains collided. Starting to merge endpieces')
-            if len(chains) == 2:
-                chains = _merge_endpiece_bins(chains[0], chains[1])
-            all_sorted = True
+            allchains[chain].append(new_bin)
+            if _check_collision(allchains[0], allchains[1]):
+                collision = True
+            # Only modify unsorted if all bins are created
+            # There will be no collision otherwise
+            if chain == (nchains - 1):
+                for chainagain in allchains:
+                    unsorted = unsorted - chainagain[-1]
         # If layers perfectly split, no unsorted atoms are left
+        if collision:
+            print('Chains collided. Starting to merge endpieces')
+            if len(allchains) == 2:
+                allchains = _merge_endpiece_bins(allchains[0], allchains[1])
         if unsorted == set():
             print('All atoms sorted')
             all_sorted = True
-    principle_layers = _create_principle_layers(chains)
+        # Max binnumber in case of infinite loop
+        if bin_index >= maxiterations:
+            print('Maximum iterations reached: ' + str(maxiterations))
+            print('Interaction radii might be too short')
+            print('Exiting program')
+            sys.exit()
+    principle_layers = _create_principle_layers(allchains)
     return principle_layers
 
 
@@ -106,10 +119,10 @@ def _check_collision(chain1, chain2):
     '''Checks if two chains collide (having same atoms)'''
     # Merge sets in both chains.
     chain1atoms, chain2atoms = set(), set()
-    n_bins = max(len(chain1), len(chain1))
-    for binindex in range(n_bins):
-        chain1atoms.update(chain1[binindex])
-        chain2atoms.update(chain2[binindex])
+    for currentbin in enumerate(chain1):
+        chain1atoms.update(chain1[currentbin[0]])
+    for currentbin in enumerate(chain2):
+        chain2atoms.update(chain2[currentbin[0]])
     # Check if one atom is in both chains.
     if chain1atoms & chain2atoms:
         return True
@@ -135,7 +148,7 @@ def _create_principle_layers(chains):
     '''Creates final one dimensional chain (principle layers) out of last two
     chains. Cuts contacts.'''
     principle_layers = chains[0][1:]
-    for binindex in range(len(chains[0]) - 1, 0, -1):
+    for binindex in range(len(chains[1]) - 1, 0, -1):
         principle_layers.append(chains[1][binindex])
     print('Principle layers created')
     return principle_layers
@@ -160,17 +173,13 @@ def test_interaction(filename, i_contacts, r_interactions, principle_layers):
                     species2 = geo.indexes[otheratom - 1]
                     if distance <= interaction_mtrx[species1][species2]:
                         interacting_layers.add(otherlayer[0])
-            if len(interacting_layers) != 3:
+            if (min(interacting_layers) < layer - 1 or
+                    max(interacting_layers) > layer + 1):
                 print('Principle layers were not sorted right! Atom '
                       + str(currentlayeratom) + ' in layer '
-                      + str(layer) + ' is interacting with more than two '
-                      + 'layers besides himself: ' + str(interacting_layers))
-                test_passed = False
-            if not (layer - 1 and layer + 1) in interacting_layers:
-                print('Principle layers were not sorted right! Atom '
-                      + str(currentlayeratom) + ' in layer '
-                      + str(layer) + ' is interacting with non adjacent '
-                      + 'layers besides himself ' + str(interacting_layers))
+                      + str(layer) +
+                      ' is interacting with non adjacent layer. '
+                      'Interacting with layers: ' + str(interacting_layers))
                 test_passed = False
     # Checks if every contact only interacts with one layer
     i_contacts = sorted(i_contacts)
@@ -194,7 +203,7 @@ def test_interaction(filename, i_contacts, r_interactions, principle_layers):
                       + 'layers: ' + str(interacting_layers))
                 test_passed = False
     if test_passed:
-        print('Test passed')
+        print('Interaction test passed')
     return test_passed
 
 
@@ -214,10 +223,9 @@ def create_jmolscript(filename, principle_layers):
                 color = 'yellow'
             else:
                 color = 'red'
-            jmolscript.write('color ' + color + '\n')    
+            jmolscript.write('color ' + color + '\n')
     jmolscript.close()
     print('Jmol script for graphical view created: ' + scriptname)
-    return None
 
 
 def save_partition(principle_layers):
@@ -247,12 +255,13 @@ def save_partition(principle_layers):
         outputfile.write(' '.join(layer[1]) + '\n')
     print('Principle Layers saved to partition.out')
     outputfile.close()
-    return None
 
 
 if __name__ == '__main__':
+    MAXITERATIONS = 200
     FILENAME, I_CONTACTS, R_INTERACTION = read_input()
-    PRINCIPLE_LAYERS = partition(FILENAME, I_CONTACTS, R_INTERACTION)
+    PRINCIPLE_LAYERS = partition(FILENAME, I_CONTACTS, R_INTERACTION,
+                                 MAXITERATIONS)
     if test_interaction(FILENAME, I_CONTACTS, R_INTERACTION, PRINCIPLE_LAYERS):
         save_partition(PRINCIPLE_LAYERS)
     create_jmolscript(FILENAME, PRINCIPLE_LAYERS)
