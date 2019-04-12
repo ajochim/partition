@@ -3,3 +3,4 @@ tests*
 *.gen
 *.xyz
 partition.out
+partition.inp
