@@ -1,4 +1,8 @@
-'''Creates Principle Layers out of gen-file. Reads input file partition.inp
+'''Creates Principle Layers out of gen-file and further information in
+partition.inp. Principle layers are used for transport calculation input in
+the dftb+ software. A principle layer is a contigous group of atoms only
+interacting with adjacent layers. Every principle layer has exactly one
+following neighbour, therefore they are a onedimensional structure.
 
 Inputfile structure:
 
@@ -33,57 +37,40 @@ def read_input():
 
 
 def partition(filename, i_contacts, r_interactions, maxiterations):
-    '''Creates principle layers'''
+    '''Creates principle layers. Atom indexes starting with 1 (Geo object
+    coordinates and inds with 0!) Algorithm first creates chains starting from
+    every contact. Each chain element is called a bin and every bin only
+    interacts with adjacent bins or contacts (Not a principle layer yet).
+    Chains (and also dead end) are merged until only two chains are left.
+    Those two chains will be resorted to create the principle layers.'''
     geo = Gen.fromfile(filename).geometry
-    interaction_mtrx = _create_interaction_mtrx(r_interactions)
-    # Creating chains. Zeroth elements are contact bins. Next are device bins.
-    # Atom indexes starting with 1. Careful with getting coordinates and inds!
-    nchains = len(i_contacts)
-    allchains = []
-    # Adding contacts (bin_index 0)
-    for contact in range(nchains):
-        allchains.append([])
-        if i_contacts[contact] is not max(i_contacts):
-            allchains[contact].append(set(range(i_contacts[contact],
-                                                i_contacts[contact + 1])))
-        else:
-            allchains[contact].append(set(range(i_contacts[contact],
-                                                geo.natom + 1)))
-    # Each iteration creates one more bin in every chain.
-    # Unsorted atoms start with device atoms.
+    allchains = _create_starting_chains(i_contacts, geo.natom + 1)
+    unsorted_atoms = set(range(1, min(i_contacts)))
     bin_index = 0
-    unsorted = set(range(1, min(i_contacts)))
     all_sorted = False
     while not all_sorted:
-        bin_index += 1
-        print('Starting to create bins with index: ', bin_index)
-        collision = False
-        for chain in range(nchains):
-            new_bin = _create_bin(allchains[chain][bin_index - 1],
-                                  unsorted, geo.coords, geo.indexes,
-                                  interaction_mtrx)
-            allchains[chain].append(new_bin)
-            if _check_collision(allchains[0], allchains[1]):
-                collision = True
-            # Only modify unsorted if all bins are created
-            # There will be no collision otherwise
-            if chain == (nchains - 1):
-                for chainagain in allchains:
-                    unsorted = unsorted - chainagain[-1]
-        # If layers perfectly split, no unsorted atoms are left
-        if collision:
-            print('Chains collided. Starting to merge endpieces')
-            if len(allchains) == 2:
-                allchains = _merge_endpiece_bins(allchains[0], allchains[1])
-        if unsorted == set():
-            print('All atoms sorted')
-            all_sorted = True
-        # Max binnumber in case of infinite loop
         if bin_index >= maxiterations:
             print('Maximum iterations reached: ' + str(maxiterations))
             print('Interaction radii might be too short')
             print('Exiting program')
             sys.exit()
+        bin_index += 1
+        print('Starting to create bins with index: ', bin_index)
+        for chain in enumerate(allchains):
+            new_bin = _create_bin(allchains[chain[0]][bin_index - 1],
+                                  unsorted_atoms, geo.coords, geo.indexes,
+                                  _create_interaction_mtrx(r_interactions))
+            allchains[chain[0]].append(new_bin)
+        allchains = _merge_untill_nocollision(allchains)
+        # Remove atoms from unsorted_atoms
+        for chain in allchains:
+            for current_bin in chain:
+                unsorted_atoms = unsorted_atoms - current_bin
+        if len(allchains) == 2:
+            if unsorted_atoms == set():
+                all_sorted = True
+            elif not _unsorted_interacting_with_lastbins(allchains):
+                _merge_dead_ends()
     principle_layers = _create_principle_layers(allchains)
     return principle_layers
 
@@ -101,6 +88,22 @@ def _create_interaction_mtrx(r_interactions):
         interaction_mtrx.append(row)
     return interaction_mtrx
 
+
+def _create_starting_chains(i_contacts, natoms):
+    '''Adding contact atoms as starting elements (binindex=0) to chains.'''
+    allchains = []
+    nchains = len(i_contacts)
+    for contact in range(nchains):
+        allchains.append([])
+        if i_contacts[contact] is not max(i_contacts):
+            allchains[contact].append(set(range(i_contacts[contact],
+                                                i_contacts[contact + 1])))
+        else:
+            allchains[contact].append(set(range(i_contacts[contact],
+                                                natoms)))
+    return allchains
+
+
 def _create_bin(last_bin, unsorted, coords, species_inds, interaction_mtrx):
     '''Creates the next bin in a chain.'''
     new_bin = set()
@@ -113,6 +116,21 @@ def _create_bin(last_bin, unsorted, coords, species_inds, interaction_mtrx):
             if distance <= interaction_mtrx[species1][species2]:
                 new_bin.add(unsortedatom)
     return new_bin
+
+
+def _merge_endpiece_bins(chain1, chain2):
+    '''Merges endpiece bins after collision of two chains'''
+    chain1[-1] = chain1[-1].union(chain2[-1])
+    chain2 = chain2[:-1]
+    return [chain1, chain2]
+
+
+def _merge_two_chains(chain1, chain2):
+    '''Merges two chains. Need same length'''
+    merged_chain = []
+    for binindex in enumerate(chain1):
+        merged_chain.append(chain1[binindex[0]].union(chain2[binindex[0]]))
+    return merged_chain
 
 
 def _check_collision(chain1, chain2):
@@ -129,19 +147,38 @@ def _check_collision(chain1, chain2):
     return False
 
 
-def _merge_endpiece_bins(chain1, chain2):
-    '''Merges endpiece bins after collision of two chains'''
-    chain1[-1] = chain1[-1].union(chain2[-1])
-    chain2 = chain2[:-1]
-    return [chain1, chain2]
+def _merge_untill_nocollision(allchains):
+    '''Merges all chains untill there is no collision.'''
+    collision = True
+    while collision:
+        collision = False
+        nchains = len(allchains)
+        if nchains == 2:
+            if _check_collision(allchains[0], allchains[1]):
+                _merge_endpiece_bins(allchains[0], allchains[1])
+        else:
+            for chain_number_i in range(nchains - 1):
+                for chain_number_j in range(chain_number_i + 1, nchains):
+                    if (_check_collision(allchains[chain_number_i],
+                                         allchains[chain_number_j])
+                            and not collision):
+                        merged_chain = _merge_two_chains(allchains[chain_number_i],
+                                                         allchains[chain_number_j])
+                        allchains[chain_number_i] = merged_chain
+                        del allchains[chain_number_j]
+                        collision = True
+    return allchains
 
 
-def _merge_two_chains(chain1, chain2):
-    '''Merges two chains. Need same length'''
-    merged_chain = []
-    for binindex in enumerate(chain1):
-        merged_chain.append(chain1[binindex[0]].union(chain2[binindex[0]]))
-    return merged_chain
+def _unsorted_interacting_with_lastbins(allchains):
+    '''Checks if last bins in a chain interact with unsorted atoms in order to
+    decide if dead ends exist'''
+    return True
+
+
+def _merge_dead_ends():
+    '''Merges deas end'''
+    pass
 
 
 def _create_principle_layers(chains):
