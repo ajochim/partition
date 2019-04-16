@@ -23,7 +23,7 @@ from dptools.gen import Gen
 
 def read_input():
     '''Reads input from partition.inp file-'''
-    print('Reading partition.inp')
+    print('Reading partition.inp \n')
     inputfile = open('partition.inp', 'r')
     lines = inputfile.readlines()
     filename = lines[0][:-1]
@@ -61,17 +61,37 @@ def partition(filename, i_contacts, r_interactions, maxiterations):
                                   unsorted_atoms, geo.coords, geo.indexes,
                                   _create_interaction_mtrx(r_interactions))
             allchains[chain[0]].append(new_bin)
-        allchains = _merge_untill_nocollision(allchains)
+        allchains, finalcollison = _merge_untill_nocollision(allchains)
         # Remove atoms from unsorted_atoms
         for chain in allchains:
             for current_bin in chain:
                 unsorted_atoms = unsorted_atoms - current_bin
-        if len(allchains) == 2:
-            if unsorted_atoms == set():
-                all_sorted = True
-            elif not _unsorted_interacting_with_lastbins(allchains):
-                _merge_dead_ends()
-    principle_layers = _create_principle_layers(allchains)
+        if (_bins_interact(allchains[0][-1], allchains[1][-1], geo.coords,
+                           geo.indexes,
+                           _create_interaction_mtrx(r_interactions))
+                and len(allchains) == 2):
+            finalcollison = True
+        if finalcollison:
+            # Correction for endpiece bin merge if endpiece is too small
+            if _bins_interact(allchains[0][-2], allchains[1][-1], geo.coords,
+                              geo.indexes,
+                              _create_interaction_mtrx(r_interactions)):
+                # Last bins before endpiece merge were too close interact
+                if len(allchains[0][-2]) < len(allchains[1][-1]):
+                    # To make sure endpiece is merged to smaller bin
+                    allchains[0][-2] = allchains[0][-2].union(allchains[0][-1])
+                    allchains[0] = allchains[0][:-1]
+                else:
+                    allchains = _merge_endpiece_bins(allchains[0],
+                                                     allchains[1])
+            if unsorted_atoms != set():
+                print('Merging dead ends')
+                allchains = _merge_dead_ends(allchains, unsorted_atoms)
+                unsorted_atoms = unsorted_atoms - allchains[0][-1]
+        if unsorted_atoms == set():
+            print('All atoms sorted \n')
+            all_sorted = True
+    principle_layers = _create_finalchain(allchains)
     return principle_layers
 
 
@@ -119,7 +139,7 @@ def _create_bin(last_bin, unsorted, coords, species_inds, interaction_mtrx):
 
 
 def _merge_endpiece_bins(chain1, chain2):
-    '''Merges endpiece bins after collision of two chains'''
+    '''Merges endpiece bins of two chains.'''
     chain1[-1] = chain1[-1].union(chain2[-1])
     chain2 = chain2[:-1]
     return [chain1, chain2]
@@ -131,6 +151,20 @@ def _merge_two_chains(chain1, chain2):
     for binindex in enumerate(chain1):
         merged_chain.append(chain1[binindex[0]].union(chain2[binindex[0]]))
     return merged_chain
+
+
+def _bins_interact(bin1, bin2, coords, species_inds, interaction_mtrx):
+    '''Checks if two bins are interacting'''
+    interaction = False
+    for bin1atom in bin1:
+        for bin2atom in bin2:
+            distance = np.linalg.norm(coords[bin1atom - 1] -
+                                      coords[bin2atom - 1])
+            species1 = species_inds[bin1atom - 1]
+            species2 = species_inds[bin2atom - 1]
+            if distance <= interaction_mtrx[species1][species2]:
+                interaction = True
+    return interaction
 
 
 def _check_collision(chain1, chain2):
@@ -150,45 +184,46 @@ def _check_collision(chain1, chain2):
 def _merge_untill_nocollision(allchains):
     '''Merges all chains untill there is no collision.'''
     collision = True
+    finalcollision = False
     while collision:
         collision = False
         nchains = len(allchains)
         if nchains == 2:
             if _check_collision(allchains[0], allchains[1]):
-                _merge_endpiece_bins(allchains[0], allchains[1])
+                print('Remaining two chains collided. Merging endpieces')
+                allchains[0], allchains[1] = _merge_endpiece_bins(allchains[0],
+                                                                  allchains[1])
+                collision = True
+                finalcollision = True
         else:
             for chain_number_i in range(nchains - 1):
                 for chain_number_j in range(chain_number_i + 1, nchains):
                     if (_check_collision(allchains[chain_number_i],
                                          allchains[chain_number_j])
                             and not collision):
+                        print('Chains collided. Starting merge.')
                         merged_chain = _merge_two_chains(allchains[chain_number_i],
                                                          allchains[chain_number_j])
                         allchains[chain_number_i] = merged_chain
                         del allchains[chain_number_j]
                         collision = True
+    return allchains, finalcollision
+
+
+def _merge_dead_ends(allchains, unsorted):
+    '''Merges dead end to last bin'''
+    allchains[0][-1] = allchains[0][-1].union(unsorted)
     return allchains
 
 
-def _unsorted_interacting_with_lastbins(allchains):
-    '''Checks if last bins in a chain interact with unsorted atoms in order to
-    decide if dead ends exist'''
-    return True
-
-
-def _merge_dead_ends():
-    '''Merges deas end'''
-    pass
-
-
-def _create_principle_layers(chains):
+def _create_finalchain(allchains):
     '''Creates final one dimensional chain (principle layers) out of last two
     chains. Cuts contacts.'''
-    principle_layers = chains[0][1:]
-    for binindex in range(len(chains[1]) - 1, 0, -1):
-        principle_layers.append(chains[1][binindex])
+    finalchain = allchains[0][1:]
+    for binindex in range(len(allchains[1]) - 1, 0, -1):
+        finalchain.append(allchains[1][binindex])
     print('Principle layers created')
-    return principle_layers
+    return finalchain
 
 
 def test_interaction(filename, i_contacts, r_interactions, principle_layers):
@@ -215,8 +250,9 @@ def test_interaction(filename, i_contacts, r_interactions, principle_layers):
                 print('Principle layers were not sorted right! Atom '
                       + str(currentlayeratom) + ' in layer '
                       + str(layer) +
-                      ' is interacting with non adjacent layer. '
-                      'Interacting with layers: ' + str(interacting_layers))
+                      ' might be interacting with non adjacent layer. '
+                      'Interacting ossible with layers: '
+                      + str(interacting_layers))
                 test_passed = False
     # Checks if every contact only interacts with one layer
     i_contacts = sorted(i_contacts)
@@ -240,11 +276,11 @@ def test_interaction(filename, i_contacts, r_interactions, principle_layers):
                       + 'layers: ' + str(interacting_layers))
                 test_passed = False
     if test_passed:
-        print('Interaction test passed')
+        print('Principle layers passed interaction test')
     return test_passed
 
 
-def create_jmolscript(filename, principle_layers):
+def create_jmolscript(filename, principle_layers, labelatoms=False):
     '''Creates jmol script for alternated coloring of created principle layers.
     Also labels layers. Script can be opened in jmol. Jmol also needs and .xyz
     format of the geometry (use gen2xyz fileame.gen).
@@ -255,7 +291,10 @@ def create_jmolscript(filename, principle_layers):
     for layer in enumerate(principle_layers):
         for atom in layer[1]:
             jmolscript.write('select atomno=' + str(atom) + '\n')
-            jmolscript.write('label ' + str(layer[0]) + '\n')
+            atomlabel = ''
+            if labelatoms:
+                atomlabel = '#' + str(atom)
+            jmolscript.write('label ' + str(layer[0]) + atomlabel + '\n')
             if layer[0]%2 == 0:
                 color = 'yellow'
             else:
@@ -290,7 +329,7 @@ def save_partition(principle_layers):
         principle_layers[layer[0]] = list(map(str, layer[1]))
     for layer in enumerate(principle_layers):
         outputfile.write(' '.join(layer[1]) + '\n')
-    print('Principle Layers saved to partition.out')
+    print('Principle layers saved to partition.out \n')
     outputfile.close()
 
 
@@ -301,4 +340,4 @@ if __name__ == '__main__':
                                  MAXITERATIONS)
     if test_interaction(FILENAME, I_CONTACTS, R_INTERACTION, PRINCIPLE_LAYERS):
         save_partition(PRINCIPLE_LAYERS)
-    create_jmolscript(FILENAME, PRINCIPLE_LAYERS)
+    create_jmolscript(FILENAME, PRINCIPLE_LAYERS, labelatoms=False)
