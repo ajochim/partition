@@ -61,11 +61,12 @@ def partition(filename, i_contacts, r_interactions, maxiterations):
                                                       geo,
                                                       interaction_mtrx,
                                                       bin_index)
-        n_collisions = 0
+        merged = False
         if len(allchains) > 2:
-            allchains, n_collisions = _merge_untill_nocollision(allchains)
-        print('Bins for iteration', bin_index, 'created.', n_collisions,
-              'chain(s) merged')
+            allchains, merged = (
+                _merge_untill_nointeracting(allchains, geo, interaction_mtrx))
+        print('Bins for iteration', bin_index, 'created. Chains merged:',
+              merged)
         if _bins_interact(allchains[0][-1], allchains[1][-1], geo.coords,
                           geo.indexes, interaction_mtrx):
             print('Starting final steps:')
@@ -75,7 +76,9 @@ def partition(filename, i_contacts, r_interactions, maxiterations):
                 print('Merged last bins due to collision')
             if unsorted_atoms != set():
                 allchains, unsorted_atoms = _sort_remaining(allchains,
-                                                            unsorted_atoms)
+                                                            unsorted_atoms,
+                                                            geo,
+                                                            interaction_mtrx)
                 print('Sorted remaining atoms')
         if unsorted_atoms == set():
             print('All atoms sorted')
@@ -90,17 +93,17 @@ def _create_interaction_mtrx(r_interactions):
     elements'''
     interaction_mtrx = []
     nspecies = len(r_interactions)
-    for rowindex in range(nspecies):
+    for row_index in range(nspecies):
         row = []
-        for columnindex in range(nspecies):
-            row.append(max([r_interactions[rowindex],
-                            r_interactions[columnindex]]))
+        for column_index in range(nspecies):
+            row.append(max([r_interactions[row_index],
+                            r_interactions[column_index]]))
         interaction_mtrx.append(row)
     return interaction_mtrx
 
 
 def _create_starting_chains(i_contacts, natoms):
-    '''Adding contact atoms as starting elements (binindex=0) to chains.'''
+    '''Adding contact atoms as starting elements (bin_index=0) to chains.'''
     allchains = []
     nchains = len(i_contacts)
     for contact in range(nchains):
@@ -144,8 +147,8 @@ def _create_next_bins(allchains, unsorted_atoms, geo, interaction_mtrx,
 def _merge_two_chains(chain1, chain2):
     '''Merges two chains. Needs same length'''
     merged_chain = []
-    for binindex in enumerate(chain1):
-        merged_chain.append(chain1[binindex[0]].union(chain2[binindex[0]]))
+    for bin_index in enumerate(chain1):
+        merged_chain.append(chain1[bin_index[0]].union(chain2[bin_index[0]]))
     return merged_chain
 
 
@@ -177,32 +180,51 @@ def _check_collision(chain1, chain2):
     return False
 
 
-def _merge_untill_nocollision(allchains):
-    '''Merges all chains untill there is no collision or only two chains are
-    left.'''
-    collision = True
-    n_collisions = 0
-    while collision and len(allchains) > 2:
-        collision = False
+def _merge_untill_nointeracting(allchains, geo, interaction_mtrx):
+    '''Merges all chains untill there is no interacting of last bins or only
+    two chains are eft.'''
+    interacting = True
+    while interacting and len(allchains) > 2:
+        interacting = False
         nchains = len(allchains)
         for chain_number_i in range(nchains - 1):
             for chain_number_j in range(chain_number_i + 1, nchains):
-                if (not collision and
-                        _check_collision(allchains[chain_number_i],
-                                         allchains[chain_number_j])):
-                    n_collisions += 1
+                if (not interacting and
+                        _bins_interact(allchains[chain_number_i][-1],
+                                       allchains[chain_number_j][-1],
+                                       geo.coords, geo.indexes,
+                                       interaction_mtrx)):
                     merged_chain = _merge_two_chains(allchains[chain_number_i],
                                                      allchains[chain_number_j])
                     allchains[chain_number_i] = merged_chain
                     del allchains[chain_number_j]
-                    collision = True
-    return allchains, n_collisions
+                    interacting = True
+    return allchains, interacting
 
 
-def _sort_remaining(allchains, unsorted_atoms):
-    '''Merges rest to smaller bin'''
-    allchains[0][-1] = allchains[0][-1].union(unsorted_atoms)
-    unsorted_atoms = unsorted_atoms - allchains[0][-1]
+def _sort_remaining(allchains, unsorted_atoms, geo, interaction_mtrx):
+    '''Merges rest. Creates new chain out of remaining atoms. Merges its bins
+    untill the chain is small enough to merge it to a chain from a contact.
+    Uses nested strucutre in newchain to use _create_next_bins function.
+    '''
+    newchain = [[allchains[0][-1]]]
+    bin_index = 0
+    while unsorted_atoms != set():
+        bin_index += 1
+        newchain, unsorted_atoms = _create_next_bins(newchain,
+                                                     unsorted_atoms, geo,
+                                                     interaction_mtrx,
+                                                     bin_index)
+    while len(newchain[0]) > len(allchains[0]) - 1:
+        for bin_index in range(0, len(newchain[0])//2):
+            newchain[0][bin_index] = (
+                newchain[0][bin_index].union(newchain[0][bin_index + 1]))
+            del newchain[0][bin_index + 1]
+    allchains[0][-1] = allchains[0][-1].union(newchain[0][0])
+    for bin_index in enumerate(newchain[0][1:]):
+        reverse_index = -1*bin_index[0] - 1
+        allchains[1][reverse_index] = (
+            allchains[1][reverse_index].union(newchain[0][bin_index[0] + 1]))
     return allchains, unsorted_atoms
 
 
@@ -210,8 +232,8 @@ def _create_finalchain(allchains):
     '''Creates final one dimensional chain (principle layers) out of last two
     chains. Cuts contacts.'''
     finalchain = allchains[0][1:]
-    for binindex in range(len(allchains[1]) - 1, 0, -1):
-        finalchain.append(allchains[1][binindex])
+    for bin_index in range(len(allchains[1]) - 1, 0, -1):
+        finalchain.append(allchains[1][bin_index])
     return finalchain
 
 
@@ -241,7 +263,7 @@ def test_interaction(filename, i_contacts, r_interactions, principle_layers):
                       + str(currentlayeratom) + ' in layer '
                       + str(layer) +
                       ' might be interacting with non adjacent layer. '
-                      'Interacting ossible with layers: '
+                      'Interacting possible with layers: '
                       + str(interacting_layers))
                 test_passed = False
     # Checks if every contact only interacts with one layer
@@ -289,7 +311,6 @@ def save_partition(principle_layers):
     for layer in enumerate(principle_layers):
         principle_layers[layer[0]] = list(layer[1])
         principle_layers[layer[0]].sort()
-    principle_layers = sorted(principle_layers)
     # Save layers
     for layer in enumerate(principle_layers):
         principle_layers[layer[0]] = list(map(str, layer[1]))
@@ -313,7 +334,7 @@ def create_jmolscript(filename, principle_layers, labelatoms=False):
             atomlabel = ''
             if labelatoms:
                 atomlabel = '#' + str(atom)
-            jmolscript.write('label ' + str(layer[0]) + atomlabel + '\n')
+            jmolscript.write('label ' + str(layer[0] + 1) + atomlabel + '\n')
             if layer[0]%2 == 0:
                 color = 'yellow'
             else:
