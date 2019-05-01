@@ -27,8 +27,9 @@ def main():
     filename, i_contacts, r_interaction = read_input()
     principle_layers = partition(
         filename, i_contacts, r_interaction, max_iterations)
-    if test_interaction(filename, i_contacts, r_interaction, principle_layers):
-        save_partition(principle_layers)
+    test_interaction(filename, i_contacts, r_interaction, principle_layers)
+    shift_atomindexes(principle_layers)
+    save_partition(principle_layers)
     create_jmolscript(filename, principle_layers, labelatoms=False)
 
 
@@ -55,14 +56,13 @@ def partition(filename, i_contacts, r_interactions, maxiterations):
     principle layer yet). Chains (and also dead ends) are merged until only
     two chains are left. Those two chains will be resorted to create the
     principle layers.'''
+    bin_index = 0
     geo = Gen.fromfile(filename).geometry
+    interaction_mtrx = _create_interaction_mtrx(r_interactions)
     allchains = _create_starting_chains(i_contacts, geo.natom)
     unsorted_atoms = set(range(min(i_contacts)))
-    bin_index = 0
-    all_sorted = False
-    interaction_mtrx = _create_interaction_mtrx(r_interactions)
     print('Starting to create chains from every contact:')
-    while not all_sorted:
+    while unsorted_atoms:
         if bin_index >= maxiterations:
             print('Maximum iterations reached:', maxiterations)
             print('Exiting program')
@@ -75,21 +75,18 @@ def partition(filename, i_contacts, r_interactions, maxiterations):
                                 allchains, geo, interaction_mtrx)
         print('Bins for iteration', bin_index, 'created. Chains merged:',
               chains_merged)
-        if (len(allchains) == 2 and _bins_interact(
-                allchains[0][-1], allchains[1][-1], geo, interaction_mtrx)):
-            print('Starting final steps:')
-            if _bins_interact(
-                    allchains[0][-1], allchains[1][-1], geo, interaction_mtrx):
+        if (len(allchains) == 2 and _chains_interact(
+                allchains[0], allchains[1], geo, interaction_mtrx)):
+            if len(allchains[1]) > 1 and _bins_interact(
+                    allchains[0][-1], allchains[1][-2], geo, interaction_mtrx):
                 allchains[0][-1] = allchains[0][-1].union(allchains[1][-1])
                 del allchains[1][-1]
-                print('Merged last bins because they were too close')
+                print('Merged last bin of chain1 and chain2')
             if unsorted_atoms:
                 _sort_remaining(
                     allchains, unsorted_atoms, geo, interaction_mtrx)
                 print('Sorted remaining atoms')
-        if not unsorted_atoms:
-            print('All atoms sorted')
-            all_sorted = True
+    print('All atoms sorted')
     principle_layers = _create_finalchain(allchains)
     print('Principle layers created (Last two chains combined)')
     return principle_layers
@@ -123,11 +120,11 @@ def _create_starting_chains(i_contacts, natoms):
     return allchains
 
 
-def _create_next_bins(allchains, unsorted_atoms, geo, interaction_mtrx):
+def _create_next_bins(chainlist, unsorted_atoms, geo, interaction_mtrx):
     '''Creates the next bins in a chain. Also updates unsorted. If new bin is
     empty, atom with smallest distance creates new bin (distance_dict
     created to accomplish this)'''
-    for chain_number, chain in enumerate(allchains):
+    for chain_number, chain in enumerate(chainlist):
         new_bin = set()
         distance_dict = {}
         for lastbinatom in chain[-1]:
@@ -138,18 +135,27 @@ def _create_next_bins(allchains, unsorted_atoms, geo, interaction_mtrx):
                 species = (geo.indexes[lastbinatom], geo.indexes[unsortedatom])
                 if distance <= interaction_mtrx[species[0]][species[1]]:
                     new_bin.add(unsortedatom)
-        if not new_bin:
+        if not new_bin and distance_dict:
             new_bin = set([min(distance_dict, key=distance_dict.get)[1]])
-        allchains[chain_number].append(new_bin)
-        unsorted_atoms.difference_update(new_bin)
+        if new_bin:
+            chainlist[chain_number].append(new_bin)
+            unsorted_atoms.difference_update(new_bin)
 
 
 def _merge_two_chains(chain1, chain2):
-    '''Merges two chains. Needs same length'''
-    merged_chain = []
-    for bin_index, chain1atoms in enumerate(chain1):
-        merged_chain.append(chain1atoms.union(chain2[bin_index]))
-    return merged_chain
+    '''Merges two chains'''
+    # Find longest in order to append the smaller to the longer
+    if len(chain1) >= len(chain2):
+        longer_chain = chain1
+        smaller_chain = chain2
+    else:
+        longer_chain = chain2
+        smaller_chain = chain1
+    # Merge smaller to longer
+    for bin_index, smallerchainbin_atoms in enumerate(smaller_chain):
+        longer_chain[bin_index] = (
+            smallerchainbin_atoms.union(longer_chain[bin_index]))
+    return longer_chain
 
 
 def _bins_interact(bin1, bin2, geo, interaction_mtrx):
@@ -165,25 +171,65 @@ def _bins_interact(bin1, bin2, geo, interaction_mtrx):
     return interaction
 
 
+def _chains_interact(chain1, chain2, geo, interaction_mtrx):
+    '''Checks if two chains are interacting'''
+    interaction = False
+    for bin1 in chain1:
+        for bin2 in chain2:
+            if _bins_interact(bin1, bin2, geo, interaction_mtrx):
+                interaction = True
+    return interaction
+
+
+def _find_closest_chains(allchains, geo, interacting_chains):
+    '''Finds closets chains'''
+    smallest_distances = []
+    for pair_number, chain_pair in enumerate(interacting_chains):
+        # Adding distance betwenn random atoms for each combination
+        smallest_distances.append(
+            np.linalg.norm(
+                geo.coords[next(iter(allchains[chain_pair[0]][-1]))] -
+                geo.coords[next(iter(allchains[chain_pair[1]][-1]))]))
+        combination_list = [
+            (atom_i, atom_j) for atom_i in allchains[chain_pair[0]][-1]
+            for atom_j in allchains[chain_pair[1]][-1]]
+        for _, combination in enumerate(combination_list):
+            distance = np.linalg.norm(geo.coords[combination[0]] -
+                                      geo.coords[combination[1]])
+            if distance < smallest_distances[pair_number]:
+                smallest_distances[pair_number] = distance
+    closest_pair_index = smallest_distances.index(min(smallest_distances))
+    closest_pair = interacting_chains[closest_pair_index]
+    return closest_pair
+
+
 def _merge_interacting_chains(allchains, geo, interaction_mtrx):
     '''Merges all chains untill there is no interacting of last bins or only
     two chains are eft.'''
+    merged = False
     interacting = True
     while interacting and len(allchains) > 2:
         interacting = False
+        interacting_chains = []
         nchains = len(allchains)
         for chain_number_i in range(nchains - 1):
             for chain_number_j in range(chain_number_i + 1, nchains):
-                if (not interacting and
-                        _bins_interact(allchains[chain_number_i][-1],
-                                       allchains[chain_number_j][-1],
-                                       geo, interaction_mtrx)):
-                    merged_chain = _merge_two_chains(allchains[chain_number_i],
-                                                     allchains[chain_number_j])
-                    allchains[chain_number_i] = merged_chain
-                    del allchains[chain_number_j]
+                if _bins_interact(allchains[chain_number_i][-1],
+                                  allchains[chain_number_j][-1],
+                                  geo, interaction_mtrx):
+                    interacting_chains.append((chain_number_i, chain_number_j))
                     interacting = True
-    return interacting
+        # Find closest chains
+        if interacting:
+            # Merge closest chains
+            closest_pair = _find_closest_chains(
+                allchains, geo, interacting_chains)
+            merged_chain = _merge_two_chains(allchains[closest_pair[0]],
+                                             allchains[closest_pair[1]])
+            allchains[closest_pair[0]] = merged_chain
+            del allchains[closest_pair[1]]
+            merged = True
+    return merged
 
 
 def _sort_remaining(allchains, unsorted_atoms, geo, interaction_mtrx):
@@ -227,20 +273,22 @@ def test_interaction(filename, i_contacts, r_interactions, principle_layers):
     for layer_index, layer in enumerate(principle_layers):
         interacting_layers = set()
         for currentlayeratom in layer:
-            for _, otherlayer in enumerate(principle_layers):
+            for otherlayer_index, otherlayer in enumerate(principle_layers):
                 for otheratom in otherlayer:
                     distance = np.linalg.norm(
                         geo.coords[otheratom] - geo.coords[currentlayeratom])
                     species = (
                         geo.indexes[currentlayeratom], geo.indexes[otheratom])
                     if distance <= interaction_mtrx[species[0]][species[1]]:
-                        interacting_layers.add(layer_index)
+                        interacting_layers.add(otherlayer_index)
             if (min(interacting_layers) < layer_index - 1 or
                     max(interacting_layers) > layer_index + 1):
                 print('Principle layers were not sorted right! Atom '
                       + str(currentlayeratom + 1) + ' in layer '
-                      + str(layer + 1) +
-                      ' might be interacting with non adjacent layer. ')
+                      + str(layer_index + 1) +
+                      ' might be interacting with non adjacent layer. '
+                      + 'Internal layernumbers (-1): '
+                      + str(interacting_layers))
                 test_passed = False
     # Checks if every contact only interacts with one layer
     i_contacts.append(geo.natom)
@@ -265,6 +313,17 @@ def test_interaction(filename, i_contacts, r_interactions, principle_layers):
     return test_passed
 
 
+def shift_atomindexes(principle_layers):
+    '''Shifts atomindexes (+1) for saving and jmol script. Also sorts.'''
+    for layer_list_index, layer in enumerate(principle_layers):
+        principle_layers[layer_list_index] = list(layer)
+        principle_layers[layer_list_index].sort()
+        for atom_list_index, _ in enumerate(layer):
+            principle_layers[layer_list_index][atom_list_index] += 1
+        principle_layers[layer_list_index] = list(
+            map(str, principle_layers[layer_list_index]))
+
+
 def save_partition(principle_layers):
     '''Saves created partition (principle layers). First two lines saves number
     of layers and atoms per layer. From line 3, every line contains the atom
@@ -280,15 +339,8 @@ def save_partition(principle_layers):
     outputfile.write(str(len(principle_layers)) + '\n')
     layer_lengths = [str(len(layer)) for layer in principle_layers]
     outputfile.write(' '.join(layer_lengths) + '\n')
-    # Sort and save layers
+    # Save layers
     for layerindex, layer in enumerate(principle_layers):
-        principle_layers[layerindex] = list(layer)
-        # Change atomindizes (+1)
-        for atom_index, _ in enumerate(layer):
-            principle_layers[layerindex][atom_index] += 1
-        principle_layers[layerindex].sort()
-        principle_layers[layerindex] = list(
-            map(str, principle_layers[layerindex]))
         outputfile.write(' '.join(principle_layers[layerindex]) + '\n')
     print('Principle layers saved to partition.out')
     outputfile.close()
@@ -308,7 +360,8 @@ def create_jmolscript(filename, principle_layers, labelatoms=False):
             atomlabel = ''
             if labelatoms:
                 atomlabel = '#' + str(atom)
-            jmolscript.write('label ' + str(layerindex + 1) + atomlabel + '\n')
+            jmolscript.write(
+                'label ' + str(int(layerindex) + 1) + atomlabel + '\n')
             if layerindex%2 == 0:
                 color = 'yellow'
             else:
