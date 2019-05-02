@@ -283,12 +283,12 @@ def test_interaction(filename, i_contacts, r_interactions, principle_layers):
                         interacting_layers.add(otherlayer_index)
             if (min(interacting_layers) < layer_index - 1 or
                     max(interacting_layers) > layer_index + 1):
+                shifted_layers = {elem + 1 for elem in interacting_layers}
                 print('Principle layers were not sorted right! Atom '
                       + str(currentlayeratom + 1) + ' in layer '
                       + str(layer_index + 1) +
-                      ' might be interacting with non adjacent layer. '
-                      + 'Internal layernumbers (-1): '
-                      + str(interacting_layers))
+                      ' might be interacting with non adjacent layer: '
+                      + str(shifted_layers))
                 test_passed = False
     # Checks if every contact only interacts with one layer
     i_contacts.append(geo.natom)
@@ -304,9 +304,11 @@ def test_interaction(filename, i_contacts, r_interactions, principle_layers):
                     if distance <= interaction_mtrx[species[0]][species[1]]:
                         interacting_layers.add(layerindex)
             if len(interacting_layers) > 1:
+                shifted_layers = {elem + 1 for elem in interacting_layers}
                 print('Principle layers were not sorted right! Atom '
                       + str(atom + 1) + ' in contact ' + str(contact + 1)
-                      + ' is interacting with more than one layer')
+                      + ' is interacting with more than one layer: '
+                      + str(shifted_layers))
                 test_passed = False
     if test_passed:
         print('Principle layers passed interaction test')
@@ -340,7 +342,7 @@ def save_partition(principle_layers):
     layer_lengths = [str(len(layer)) for layer in principle_layers]
     outputfile.write(' '.join(layer_lengths) + '\n')
     # Save layers
-    for layerindex, layer in enumerate(principle_layers):
+    for layerindex, _ in enumerate(principle_layers):
         outputfile.write(' '.join(principle_layers[layerindex]) + '\n')
     print('Principle layers saved to partition.out')
     outputfile.close()

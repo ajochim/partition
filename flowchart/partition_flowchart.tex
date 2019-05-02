@@ -1,0 +1,85 @@
+\documentclass[a4paper]{article}
+
+\usepackage[latin1]{inputenc}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows}
+
+%%%<
+\usepackage{verbatim}
+\usepackage[active,tightpage]{preview}
+\PreviewEnvironment{tikzpicture}
+\setlength\PreviewBorder{5pt}%
+%%%>
+
+\begin{comment}
+:Title: Simple flow chart
+:Tags: Diagrams
+
+With PGF/TikZ you can draw flow charts with relative ease. This flow chart from [1]_
+outlines an algorithm for identifying the parameters of an autonomous underwater vehicle model. 
+
+Note that relative node
+placement has been used to avoid placing nodes explicitly. This feature was
+introduced in PGF/TikZ >= 1.09.
+
+.. [1] Bossley, K.; Brown, M. & Harris, C. Neurofuzzy identification of an autonomous underwater vehicle `International Journal of Systems Science`, 1999, 30, 901-913 
+
+
+\end{comment}
+
+
+\begin{document}
+\pagestyle{empty}
+
+
+% Define block styles
+\tikzstyle{decision} = [diamond, draw, fill=green!20, 
+    minimum width=2cm, minimum height=1cm, text badly centered, node distance=3cm, inner sep=0pt]
+\tikzstyle{block} = [rectangle, draw, fill=blue!20, 
+    minimum width=2cm, minimum height=1cm, node distance=3cm, text centered, rounded corners, minimum height=4em]
+\tikzstyle{line} = [draw, -latex']
+\tikzstyle{cloud} = [draw, ellipse,fill=red!20, node distance=3cm,
+    minimum height=2em]
+
+\begin{tikzpicture}[node distance = 2cm, auto]
+% Place nodes
+\node [block] (mtrx) {create\_interaction\_mtrx};
+\node [block, below of=mtrx, node distance = 2cm] (chains) {create\_starting\_chains};
+\node [cloud, left of=mtrx, node distance = 4cm] (start) {Start};
+
+\node [decision, below of=mtrx, node distance = 5cm] (while) {while unsorted\_atoms};
+\node [block, left of=while, node distance = 4cm] (cpl) {create\_finalchain};
+\node [cloud, below of=cpl] (pl) {principle\_layers};
+\node [block, right of=while, node distance = 4cm] (next) {create\_next\_bins};
+\node [decision, below of=next] (len2) {if nChains $>$ 2};
+\node [block, right of=len2, node distance = 5cm,text width=4cm] (mergeinter) {merge\_interacting\_chains (while nChains $>$ 2)};
+\node [decision, below of=len2,text width=3cm, node distance = 4cm] (last) {if nChains $==$ 2 and chains\_interact};
+\node [decision, below of=last,text width=3cm, node distance = 5cm] (correction) {if nChains $>$ 1 and bins\_interact(
+	chain1][-1], chain2][-2]};
+\node [block, right of=correction, node distance = 5cm,text width=4cm] (mergelast) {merge last bins};
+\node [decision, below of=correction, node distance = 4.5cm] (stillunsorted) {if unsorted\_atoms};
+\node [block, below of=stillunsorted, node distance = 4cm] (sortrem) {sort\_remaining};
+% Draw edges
+
+\path [line] (start) -- (mtrx);
+\path [line] (mtrx) -- (chains);
+\path [line] (chains) -- (while);
+\path [line] (while) -- node [anchor=south]{No}(cpl);
+\path [line] (cpl) -- (pl);
+\path [line] (while) -- node {Yes}(next);
+\path [line] (next) -- (len2);
+\path [line] (len2) -- node {Yes}(mergeinter);
+\path [line] (len2) -- node {No}(last);
+\path [line] (mergeinter) |- (last);
+\path [line] (last) -| node [left,xshift=1.5cm,yshift=0.3cm]{No}(while);
+\path [line] (last) -- node [anchor=east]{Yes}(correction);
+\path [line] (correction) -- node [anchor=east]{No}(stillunsorted);
+\path [line] (correction) -- node [anchor=south]{Yes}(mergelast);
+\path [line] (mergelast) |- (stillunsorted);
+\path [line] (sortrem) -| (while);
+\path [line] (stillunsorted) -- node [anchor=west]{Yes} (sortrem);
+\path [line] (stillunsorted) -| node [left,xshift=1.5cm,yshift=0.3cm]{No} (while);
+
+\end{tikzpicture}
+
+\end{document}
